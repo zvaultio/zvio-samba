@@ -23,6 +23,7 @@
 #include "system/filesys.h"
 #include "nfs4_acls.h"
 #include "zfsacl.h"
+#include "smb_libzfs.h"
 
 static int vfs_ixnas_debug_level = DBGC_VFS;
 
@@ -49,6 +50,9 @@ struct ixnas_config_data {
 #define ACL_BRAND_UNKNOWN	0
 #define ACL_BRAND_POSIX		1
 #define ACL_BRAND_NFS4		2
+
+/* Flag for utimensat to set birth time */
+#define AT_UTIMENSAT_FULL      0x1000
 
 
 #define ACL4_XATTR "system.nfs4_acl_xdr"

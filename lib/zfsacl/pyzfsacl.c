@@ -1183,8 +1183,8 @@ static PyMethodDef acl_object_methods[] = {
 		.ml_doc = "Delete entry by specied index"
 	},
 	{
-		.ml_name = "native_data",
-		.ml_meth = py_native_data,
+		.ml_meth = (PyCFunction)py_native_data,
+		.ml_flags = METH_VARARGS|METH_KEYWORDS,
 		.ml_flags = METH_VARARGS,
 		.ml_doc = "Returns bytes of native ACL"
 	},

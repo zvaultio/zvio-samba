@@ -1538,7 +1538,6 @@ static int ixnas_openat(vfs_handle_struct *handle,
 				   smb_fname_in,
 				   fsp, flags, mode);
 }
-#endif /* FREEBSD */
 
 static bool set_acl_parameters(struct vfs_handle_struct *handle,
 			       struct ixnas_config_data *config)

@@ -1315,40 +1315,72 @@ failure:
 	return -1;
 }
 
-#if defined (FREEBSD)
-static struct file_id ixnas_file_id_create(struct vfs_handle_struct *handle,
-					   const SMB_STRUCT_STAT *sbuf)
+/*
+ * Windows clients return NT_STATUS_OBJECT_NAME_COLLISION in case of
+ * rename in case of rename in case insensitive dataset. MacOS does
+ * attempts the rename. rename() in FreeBSD in this returns success, but
+ * does not actually rename the file. Add new logic to rename(). If
+ * a case_insensitive string comparison of the filenames returns 0, then
+ * perform two renames so that the returned filename matches client
+ * expectations. First rename appends a jenkins hash of the full path
+ * to the file to its name. This makes the rename deterministic, but
+ * minimizes risk of name collisions.
+ */
+static int ixnas_renameat(vfs_handle_struct *handle,
+			  files_struct *srcfsp,
+			  const struct smb_filename *smb_fname_src,
+			  files_struct *dstfsp,
+			  const struct smb_filename *smb_fname_dst)
 {
-	struct file_id key = (struct file_id) {
-		.devid = sbuf->st_ex_dev,
-		.inode = sbuf->st_ex_ino,
-		.extid = sbuf->st_ex_gen,
-	};
+	int result;
+	struct ixnas_config_data *config = NULL;
+	char *tmp_base_name = NULL;
+	uint32_t nhash;
+	NTSTATUS status;
+	SMB_VFS_HANDLE_GET_DATA(handle, config,
+				struct ixnas_config_data,
+				return -1);
 
-	return key;
-}
-
-static inline uint64_t gen_id_comp(uint64_t p) {
-	uint64_t out = (p & UINT32_MAX) ^ (p >> 32);
-	return out;
-};
-
-static uint64_t ixnas_fs_file_id(struct vfs_handle_struct *handle,
-				 const SMB_STRUCT_STAT *psbuf)
-{
-	uint64_t file_id;
-	if (!(psbuf->st_ex_iflags & ST_EX_IFLAG_CALCULATED_FILE_ID)) {
-		return psbuf->st_ex_file_id;
+	if (config->props->casesens != SMBZFS_INSENSITIVE) {
+		return SMB_VFS_NEXT_RENAMEAT(handle,
+					     srcfsp,
+					     smb_fname_src,
+					     dstfsp,
+					     smb_fname_dst);
 	}
-
-	file_id = gen_id_comp(psbuf->st_ex_ino);
-	file_id |= gen_id_comp(psbuf->st_ex_gen) << 32;
-	return file_id;
+	result = strcasecmp_m(smb_fname_src->base_name,
+			      smb_fname_dst->base_name);
+	if (result != 0) {
+		return SMB_VFS_NEXT_RENAMEAT(handle,
+					     srcfsp,
+					     smb_fname_src,
+					     dstfsp,
+					     smb_fname_dst);
+	}
+	status = file_name_hash(handle->conn, smb_fname_src->base_name, &nhash);
+	if (NT_STATUS_EQUAL(status, NT_STATUS_NO_MEMORY)) {
+		DBG_ERR("failed to generate filename hash for %s\n",
+			smb_fname_src->base_name);
+		errno=ENOMEM;
+		return -1;
+	}
+	tmp_base_name = talloc_asprintf(talloc_tos(), "%s_0x%08x",
+					smb_fname_src->base_name, nhash);
+	result = rename(smb_fname_src->base_name, tmp_base_name);
+	if (result != 0) {
+		DBG_ERR("Failed to rename %s to intermediate name %s\n",
+			smb_fname_src->base_name, tmp_base_name);
+		TALLOC_FREE(tmp_base_name);
+		return result;
+	}
+	result = rename(tmp_base_name, smb_fname_dst->base_name);
+	TALLOC_FREE(tmp_base_name);
+	return result;
 }
 
 static int fsp_set_times(files_struct *fsp, struct timespec *times, bool set_btime)
 {
-	int flag = set_btime ? AT_UTIMENSAT_BTIME : 0;
+	int flag = set_btime ? AT_UTIMENSAT_FULL : 0;
 	if (fsp->fsp_flags.have_proc_fds) {
 		int fd = fsp_get_pathref_fd(fsp);
 		const char *p = NULL;
@@ -1640,12 +1672,9 @@ static struct vfs_fn_pointers ixnas_fns = {
 	.fset_dos_attributes_fn = ixnas_fset_dos_attributes,
 	/* zfs_acl_enabled = true */
 	.fchmod_fn = ixnas_fchmod,
-#if defined (FREEBSD)
 	.openat_fn = ixnas_openat,
 	.fntimes_fn = ixnas_ntimes,
-	.file_id_create_fn = ixnas_file_id_create,
-	.fs_file_id_fn = ixnas_fs_file_id,
-#endif /* FREEBSD */
+	.renameat_fn = ixnas_renameat,
 	.fget_nt_acl_fn = ixnas_fget_nt_acl,
 	.fset_nt_acl_fn = ixnas_fset_nt_acl,
 	.sys_acl_get_fd_fn = ixnas_fail__sys_acl_get_fd,
